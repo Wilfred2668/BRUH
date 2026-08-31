@@ -1,0 +1,1 @@
+"""TypeScript compiler diagnostic rules."""

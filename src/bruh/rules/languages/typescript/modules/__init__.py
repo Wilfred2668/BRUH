@@ -1,0 +1,1 @@
+"""TypeScript module resolution rules."""
