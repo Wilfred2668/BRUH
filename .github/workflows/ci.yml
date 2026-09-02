@@ -1,0 +1,165 @@
+name: BRUH CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  filter:
+    name: Detect Changed Subsystems
+    runs-on: ubuntu-latest
+    outputs:
+      code_changed: ${{ steps.changes.outputs.code_changed }}
+      run_all: ${{ steps.changes.outputs.run_all }}
+      python_rules: ${{ steps.changes.outputs.python_rules }}
+      js_rules: ${{ steps.changes.outputs.js_rules }}
+      ts_rules: ${{ steps.changes.outputs.ts_rules }}
+      domain_rules: ${{ steps.changes.outputs.domain_rules }}
+      system_rules: ${{ steps.changes.outputs.system_rules }}
+      packaging: ${{ steps.changes.outputs.packaging }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Path Filters
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            code_changed:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'bruh.spec'
+              - '.github/workflows/**'
+            run_all:
+              - 'src/bruh/engine/**'
+              - 'src/bruh/cli.py'
+              - 'src/bruh/__main__.py'
+              - 'src/bruh/config.py'
+              - 'src/bruh/capture/**'
+              - 'src/bruh/shell/**'
+              - 'src/bruh/presentation/**'
+              - 'pyproject.toml'
+              - 'bruh.spec'
+              - '.github/workflows/**'
+              - 'tests/engine/**'
+              - 'tests/capture/**'
+              - 'tests/cli/**'
+              - 'tests/shell/**'
+              - 'tests/presentation/**'
+              - 'tests/integration/**'
+              - 'tests/fixtures/**'
+            python_rules:
+              - 'src/bruh/rules/languages/python/**'
+              - 'tests/rules/languages/python/**'
+            js_rules:
+              - 'src/bruh/rules/languages/javascript/**'
+              - 'tests/rules/languages/javascript/**'
+            ts_rules:
+              - 'src/bruh/rules/languages/typescript/**'
+              - 'tests/rules/languages/typescript/**'
+            domain_rules:
+              - 'src/bruh/rules/domains/**'
+              - 'tests/rules/domains/**'
+            system_rules:
+              - 'src/bruh/rules/system/**'
+              - 'tests/rules/system/**'
+            packaging:
+              - 'pyproject.toml'
+              - 'bruh.spec'
+              - 'src/bruh/shell/scripts/**'
+
+  test:
+    name: Test Suite (${{ matrix.os }} - Python ${{ matrix.python-version }})
+    needs: filter
+    if: github.event_name == 'push' || needs.filter.outputs.code_changed == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run Full Test Suite (Push / Core / Shared Fallback)
+        if: github.event_name == 'push' || needs.filter.outputs.run_all == 'true' || (needs.filter.outputs.python_rules != 'true' && needs.filter.outputs.js_rules != 'true' && needs.filter.outputs.ts_rules != 'true' && needs.filter.outputs.domain_rules != 'true' && needs.filter.outputs.system_rules != 'true')
+        run: |
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Run Targeted Python Rule Tests
+        if: github.event_name == 'pull_request' && needs.filter.outputs.run_all != 'true' && needs.filter.outputs.python_rules == 'true'
+        run: |
+          python -m unittest discover -s tests/rules/languages/python -p "test_*.py" -v
+
+      - name: Run Targeted JavaScript Rule Tests
+        if: github.event_name == 'pull_request' && needs.filter.outputs.run_all != 'true' && needs.filter.outputs.js_rules == 'true'
+        run: |
+          python -m unittest discover -s tests/rules/languages/javascript -p "test_*.py" -v
+
+      - name: Run Targeted TypeScript Rule Tests
+        if: github.event_name == 'pull_request' && needs.filter.outputs.run_all != 'true' && needs.filter.outputs.ts_rules == 'true'
+        run: |
+          python -m unittest discover -s tests/rules/languages/typescript -p "test_*.py" -v
+
+      - name: Run Targeted Domain Rule Tests
+        if: github.event_name == 'pull_request' && needs.filter.outputs.run_all != 'true' && needs.filter.outputs.domain_rules == 'true'
+        run: |
+          python -m unittest discover -s tests/rules/domains -p "test_*.py" -v
+
+      - name: Run Targeted System Rule Tests
+        if: github.event_name == 'pull_request' && needs.filter.outputs.run_all != 'true' && needs.filter.outputs.system_rules == 'true'
+        run: |
+          python -m unittest discover -s tests/rules/system -p "test_*.py" -v
+
+  package-and-exe:
+    name: Build Packages & Windows Standalone Executable
+    needs: [filter, test]
+    if: github.event_name == 'push' || needs.filter.outputs.packaging == 'true' || needs.filter.outputs.run_all == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Build Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build pyinstaller
+
+      - name: Build PyPI Distribution (Wheel & sdist)
+        run: python -m build
+
+      - name: Build Standalone Windows bruh.exe
+        run: pyinstaller bruh.spec
+
+      - name: Test Standalone Windows Executable
+        run: |
+          .\dist\bruh.exe --help
+          .\dist\bruh.exe check
+          .\dist\bruh.exe explain "ZeroDivisionError: division by zero"
+          .\dist\bruh.exe explain "test.ts:1:5 - error TS2322: Type 'string' is not assignable to type 'number'."
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bruh-release-artifacts
+          path: dist/*
